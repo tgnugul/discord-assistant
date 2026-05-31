@@ -1,0 +1,4 @@
+.env
+memories.db
+__pycache__/
+*.pyc
