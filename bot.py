@@ -282,8 +282,11 @@ def git_commit_push(date_str, folders):
     return f"{DEVLOG_REPO_URL}/commit/{sha}"
 
 
-async def generate_and_commit_devlog(date_str=None):
-    """전날(기본) 메모를 카테고리별로 정리해 daily-report 리포에 커밋."""
+async def generate_and_commit_devlog(date_str=None, notify_empty=False):
+    """전날(기본) 메모를 카테고리별로 정리해 daily-report 리포에 커밋.
+
+    notify_empty=True면 생성할 내용이 없을 때도 Discord에 알린다(수동 /데브로그용).
+    """
     target = date_str or (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
     notify = bot.get_channel(SUMMARY_CHANNEL_ID)
     try:
@@ -311,6 +314,8 @@ async def generate_and_commit_devlog(date_str=None):
 
         if not committed:
             print(f"[devlog] {target}: 커밋할 내용 없음 (스킵)")
+            if notify_empty and notify:
+                await notify.send(f"ℹ️ `{target}`: 텍스트 메모가 없어 데브 로그를 만들지 않았어요. (작업 종료)")
             return
 
         url = await asyncio.to_thread(git_commit_push, target, committed)
@@ -412,7 +417,7 @@ async def slash_devlog(interaction: discord.Interaction, 날짜: str = None):
     await interaction.response.defer()
     target = 날짜 or (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
     await interaction.followup.send(f"`{target}` 데브 로그 생성 중...")
-    await generate_and_commit_devlog(target)
+    await generate_and_commit_devlog(target, notify_empty=True)
 
 
 @bot.event
