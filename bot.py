@@ -189,7 +189,10 @@ async def ai_weekly_cleanup():
 
 
 def get_messages_for_channels_on_date(channels, date_str):
-    """지정한 채널들에서 특정 날짜(YYYY-MM-DD)에 작성된 메시지 조회 (status 무관)."""
+    """지정한 채널들에서 특정 날짜(YYYY-MM-DD)에 작성된 메시지 조회 (status 무관).
+
+    이미지/파일만 있는 빈 내용 메시지는 제외한다.
+    """
     conn = sqlite3.connect("memories.db")
     c = conn.cursor()
     placeholders = ",".join("?" * len(channels))
@@ -197,6 +200,7 @@ def get_messages_for_channels_on_date(channels, date_str):
         f"""
         SELECT channel, content, timestamp FROM messages
         WHERE channel IN ({placeholders}) AND date(timestamp) = ?
+        AND TRIM(content) != ''
         ORDER BY timestamp
         """,
         (*channels, date_str),
