@@ -416,7 +416,7 @@ async def slash_question(interaction: discord.Interaction, 내용: str):
     await interaction.followup.send(response.choices[0].message.content)
 
 
-@tree.command(name="데브로그", description="지정 날짜의 데브 로그를 지금 생성해 GitHub에 커밋합니다")
+@tree.command(name="업로드", description="지정 날짜의 데브 로그를 지금 생성해 GitHub에 업로드합니다")
 @app_commands.describe(날짜="YYYY-MM-DD (비우면 어제)")
 async def slash_devlog(interaction: discord.Interaction, 날짜: str = None):
     await interaction.response.defer()

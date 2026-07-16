@@ -104,7 +104,7 @@ journalctl -u discord-bot -f      # 실시간 로그 (Ctrl+C로 종료)
 
 ## Part 5. 검증
 
-- Discord에서 `/데브로그` 실행 → 어제치 데브 로그가 생성·커밋되고 알림이 오는지 확인.
+- Discord에서 `/업로드` 실행 → 어제치 데브 로그가 생성·커밋되고 알림이 오는지 확인.
 - https://github.com/tgnugul/daily-report 에 커밋이 올라오면 성공.
 - 이후 매일 **06:00 KST** 자동 커밋.
 
