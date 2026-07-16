@@ -1,8 +1,12 @@
 import discord
 from discord import app_commands
 import os
+import re
+import base64
+import asyncio
 import sqlite3
-from datetime import datetime
+import subprocess
+from datetime import datetime, timedelta
 from openai import OpenAI
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from dotenv import load_dotenv
@@ -12,6 +16,27 @@ load_dotenv()
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 SUMMARY_CHANNEL_ID = int(os.getenv("SUMMARY_CHANNEL_ID"))
+
+# --- 데일리 리포트(공개 개발 저널) 설정 ---
+DEVLOG_REPO_PATH = os.getenv("DEVLOG_REPO_PATH", r"C:\Users\ghwn1\daily-report")
+DEVLOG_REPO_URL = "https://github.com/tgnugul/daily-report"
+# 클라우드(VM)에서 git push 인증용. 설정 시 http 헤더로 토큰 주입, 없으면 로컬 gh 자격증명 사용.
+GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
+# 폴더명 -> 그 폴더에 종합할 Discord 채널 목록
+DEVLOG_CATEGORIES = {
+    "잡생각": ["잡생각"],
+    "뽀시래기": ["뽀시래기", "뽀시래기-피드백"],
+    "세미나": ["세미나"],
+}
+# 공개 리포에 절대 올라가면 안 되는 민감 정보 패턴 (결정론적 게이트)
+SECRET_PATTERNS = [
+    r"sk-[A-Za-z0-9]{20,}",                                    # OpenAI 키
+    r"gh[posru]_[A-Za-z0-9]{20,}",                             # GitHub 토큰
+    r"AKIA[0-9A-Z]{16}",                                       # AWS 액세스 키
+    r"xox[baprs]-[A-Za-z0-9-]{10,}",                           # Slack 토큰
+    r"-----BEGIN [A-Z ]*PRIVATE KEY-----",                     # 개인 키
+    r"(?i)(password|passwd|secret|token|api[_-]?key)\s*[=:]\s*\S{6,}",  # 자격증명 할당
+]
 
 client_ai = OpenAI(api_key=OPENAI_API_KEY)
 
@@ -163,6 +188,138 @@ async def ai_weekly_cleanup():
         )
 
 
+def get_messages_for_channels_on_date(channels, date_str):
+    """지정한 채널들에서 특정 날짜(YYYY-MM-DD)에 작성된 메시지 조회 (status 무관)."""
+    conn = sqlite3.connect("memories.db")
+    c = conn.cursor()
+    placeholders = ",".join("?" * len(channels))
+    c.execute(
+        f"""
+        SELECT channel, content, timestamp FROM messages
+        WHERE channel IN ({placeholders}) AND date(timestamp) = ?
+        ORDER BY timestamp
+        """,
+        (*channels, date_str),
+    )
+    rows = c.fetchall()
+    conn.close()
+    return rows
+
+
+def scan_secrets(text):
+    """민감 정보 패턴이 있으면 매칭된 조각(축약)을 반환, 없으면 None."""
+    for pat in SECRET_PATTERNS:
+        m = re.search(pat, text)
+        if m:
+            return m.group(0)[:40]
+    return None
+
+
+def reframe_devlog(folder, rows, date_str):
+    """메모를 개발 저널 톤의 공개용 마크다운으로 재작성."""
+    text = "\n".join(f"[{r[0]}] {r[1]}" for r in rows)
+    combined_note = (
+        "이 카테고리는 '뽀시래기'(개발 기록)와 '뽀시래기-피드백'(사용자/테스트 피드백) "
+        "두 채널의 내용을 하나로 종합해서 써야 해. "
+        if folder == "뽀시래기" else ""
+    )
+    response = client_ai.chat.completions.create(
+        model="gpt-4o-mini",
+        messages=[
+            {
+                "role": "system",
+                "content": (
+                    "너는 개발자의 하루를 개발 저널(Dev Log)로 정리하는 작가야. "
+                    "아래는 사용자가 하루 동안 남긴 메모야. "
+                    "이 글은 GitHub에 공개되는 포트폴리오용이야. "
+                    "1인칭(했다/배웠다 체)으로, 오늘 무엇을 했고 무엇을 배우고 느꼈는지 자연스러운 저널로 재작성해줘. "
+                    f"{combined_note}"
+                    "규칙: "
+                    "(1) 메모에 없는 내용을 지어내지 마. "
+                    "(2) API 키, 토큰, 비밀번호, 이메일/전화번호 등 개인 연락처, 그 외 민감 정보는 절대 포함하지 마. "
+                    "(3) 출력은 마크다운. 맨 첫 줄은 '## {날짜}' 형식의 제목. "
+                    "(4) 내용이 짧으면 짧게, 억지로 늘리지 마. "
+                    "(5) 마지막에 '**배운 점**' 항목이 자연스러우면 덧붙여줘."
+                ).replace("{날짜}", date_str),
+            },
+            {"role": "user", "content": text},
+        ],
+    )
+    return response.choices[0].message.content.strip() + "\n"
+
+
+def _run_git(args):
+    env = {**os.environ, "GIT_TERMINAL_PROMPT": "0"}
+    # 토큰이 있으면(클라우드) http 헤더로 인증 주입. 로컬(토큰 없음)은 gh 자격증명 헬퍼 사용.
+    auth = []
+    if GITHUB_TOKEN:
+        basic = base64.b64encode(f"x-access-token:{GITHUB_TOKEN}".encode()).decode()
+        auth = ["-c", f"http.extraheader=AUTHORIZATION: basic {basic}"]
+    r = subprocess.run(
+        ["git", "-C", DEVLOG_REPO_PATH, *auth, *args],
+        capture_output=True, text=True, encoding="utf-8", env=env,
+    )
+    if r.returncode != 0:
+        # 토큰이 로그에 남지 않도록 auth 옵션은 제외하고 메시지 구성
+        raise RuntimeError(f"git {' '.join(args)} 실패: {(r.stderr or r.stdout).strip()}")
+    return (r.stdout or "").strip()
+
+
+def git_pull_rebase():
+    _run_git(["pull", "--rebase", "origin", "main"])
+
+
+def git_commit_push(date_str, folders):
+    _run_git(["add", "-A"])
+    _run_git(["commit", "-m", f"devlog: {date_str} ({', '.join(folders)})"])
+    _run_git(["push", "origin", "main"])
+    sha = _run_git(["rev-parse", "HEAD"])
+    return f"{DEVLOG_REPO_URL}/commit/{sha}"
+
+
+async def generate_and_commit_devlog(date_str=None):
+    """전날(기본) 메모를 카테고리별로 정리해 daily-report 리포에 커밋."""
+    target = date_str or (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
+    notify = bot.get_channel(SUMMARY_CHANNEL_ID)
+    try:
+        await asyncio.to_thread(git_pull_rebase)
+        committed = []
+        for folder, channels in DEVLOG_CATEGORIES.items():
+            rows = get_messages_for_channels_on_date(channels, target)
+            if not rows:
+                continue
+            raw = "\n".join(r[1] for r in rows)
+            md = await asyncio.to_thread(reframe_devlog, folder, rows, target)
+            hit = scan_secrets(raw) or scan_secrets(md)
+            if hit:
+                if notify:
+                    await notify.send(
+                        f"⚠️ **[{folder}] {target} 데브로그 커밋 중단** — "
+                        f"민감 정보 의심 패턴 발견(`{hit}`). 수동 확인 후 직접 올려주세요."
+                    )
+                continue
+            path = os.path.join(DEVLOG_REPO_PATH, folder, f"{target}.md")
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(md)
+            committed.append(folder)
+
+        if not committed:
+            print(f"[devlog] {target}: 커밋할 내용 없음 (스킵)")
+            return
+
+        url = await asyncio.to_thread(git_commit_push, target, committed)
+        if notify:
+            await notify.send(
+                f"✅ **{target} 데브 로그 커밋 완료**\n"
+                f"카테고리: {', '.join(committed)}\n{url}"
+            )
+    except Exception as e:
+        print(f"[devlog] 오류: {e}")
+        if notify:
+            await notify.send(f"❌ **{target} 데브 로그 자동 커밋 실패**\n```\n{e}\n```")
+
+
 async def send_daily_summary():
     rows = get_all_messages(status="active")
     if not rows:
@@ -244,6 +401,15 @@ async def slash_question(interaction: discord.Interaction, 내용: str):
     await interaction.followup.send(response.choices[0].message.content)
 
 
+@tree.command(name="데브로그", description="지정 날짜의 데브 로그를 지금 생성해 GitHub에 커밋합니다")
+@app_commands.describe(날짜="YYYY-MM-DD (비우면 어제)")
+async def slash_devlog(interaction: discord.Interaction, 날짜: str = None):
+    await interaction.response.defer()
+    target = 날짜 or (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
+    await interaction.followup.send(f"`{target}` 데브 로그 생성 중...")
+    await generate_and_commit_devlog(target)
+
+
 @bot.event
 async def on_raw_reaction_add(payload):
     if str(payload.emoji) != '✅':
@@ -266,6 +432,7 @@ async def on_ready():
     if not scheduler.running:
         scheduler.add_job(send_daily_summary, "cron", hour=9, minute=0)
         scheduler.add_job(ai_weekly_cleanup, "cron", day_of_week="mon", hour=9, minute=10)
+        scheduler.add_job(generate_and_commit_devlog, "cron", hour=6, minute=0)
         scheduler.start()
 
 
@@ -277,4 +444,5 @@ async def on_message(message):
     print(f"[{message.channel.name}] {message.content}")
 
 
-bot.run(DISCORD_TOKEN)
+if __name__ == "__main__":
+    bot.run(DISCORD_TOKEN)

@@ -1,0 +1,15 @@
+[Unit]
+Description=Discord Assistant Bot (personal memo + daily-report devlog)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/discord-assistant
+ExecStart=/home/ubuntu/discord-assistant/.venv/bin/python bot.py
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

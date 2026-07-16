@@ -21,6 +21,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 | `/요약` 슬래시 커맨드 | 현재 채널의 최근 N일치 메모를 즉시 요약 (기본 90일) |
 | `/질문` 슬래시 커맨드 | 저장된 전체 메모를 바탕으로 자유 질문에 답변 |
 | 히스토리 임포트 | 봇 시작 시 서버의 기존 채널 메시지 500개를 자동 수집 |
+| 공개 데브 로그 | 매일 오전 6시, 전날 메모를 개발 저널 톤으로 재작성해 GitHub 공개 리포(`daily-report`)에 카테고리 폴더별로 커밋. 커밋 시 Discord 알림 |
+| `/데브로그` 슬래시 커맨드 | 지정 날짜(기본 어제)의 데브 로그를 즉시 생성·커밋 (수동 트리거) |
 
 ### 구현 예정 (미완성)
 
@@ -63,8 +65,14 @@ python bot.py
 **스케줄러**: `APScheduler AsyncIOScheduler`. `on_ready`에서 시작.
 - 매일 09:00 → `send_daily_summary()`
 - 매주 월요일 09:10 → `ai_weekly_cleanup()`
+- 매일 06:00 → `generate_and_commit_devlog()` (전날치 공개 데브 로그)
 
 **완료 처리 흐름**: `on_raw_reaction_add` → ✅ 이모지 감지 → `mark_done(message_id)` → DB `status='done'`
+
+**공개 데브 로그 흐름** (`generate_and_commit_devlog`): 전날 메모 조회 → 카테고리별 GPT 재작성 → `scan_secrets()` 결정론적 시크릿 게이트 통과 시에만 → `daily-report` 로컬 클론에 `{폴더}/{날짜}.md` 작성 → `git add/commit/push` → Discord 알림. 성공·실패·시크릿 차단 모두 `SUMMARY_CHANNEL_ID` 채널에 알림.
+- `DEVLOG_CATEGORIES`: 폴더명→종합할 채널 목록 매핑. `뽀시래기` 폴더는 `뽀시래기`+`뽀시래기-피드백` 두 채널을 하나로 종합.
+- `DEVLOG_REPO_PATH`(.env 선택, 기본 `C:\Users\ghwn1\daily-report`): 미리 클론해둔 공개 리포. push 인증은 `gh auth setup-git`으로 설정된 git 자격증명 헬퍼 사용(별도 PAT 불필요). git 명령은 `GIT_TERMINAL_PROMPT=0`으로 비대화식 실행.
+- 리포: https://github.com/tgnugul/daily-report
 
 ### DB 스키마 (`memories.db`)
 
