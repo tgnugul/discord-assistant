@@ -282,16 +282,16 @@ def git_commit_push(date_str, folders):
     return f"{DEVLOG_REPO_URL}/commit/{sha}"
 
 
-async def generate_and_commit_devlog(date_str=None, notify_empty=False):
+async def generate_and_commit_devlog(date_str=None):
     """전날(기본) 메모를 카테고리별로 정리해 daily-report 리포에 커밋.
 
-    notify_empty=True면 생성할 내용이 없을 때도 Discord에 알린다(수동 /데브로그용).
+    Discord로 직접 보내지 않고 (status, message)를 반환한다. 호출자가 원하는 곳에 보낸다.
+    status: 'committed' / 'empty' / 'blocked' / 'error'.
     """
     target = date_str or (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
-    notify = bot.get_channel(SUMMARY_CHANNEL_ID)
     try:
         await asyncio.to_thread(git_pull_rebase)
-        committed = []
+        committed, blocked = [], []
         for folder, channels in DEVLOG_CATEGORIES.items():
             rows = get_messages_for_channels_on_date(channels, target)
             if not rows:
@@ -300,11 +300,7 @@ async def generate_and_commit_devlog(date_str=None, notify_empty=False):
             md = await asyncio.to_thread(reframe_devlog, folder, rows, target)
             hit = scan_secrets(raw) or scan_secrets(md)
             if hit:
-                if notify:
-                    await notify.send(
-                        f"⚠️ **[{folder}] {target} 데브로그 커밋 중단** — "
-                        f"민감 정보 의심 패턴 발견(`{hit}`). 수동 확인 후 직접 올려주세요."
-                    )
+                blocked.append((folder, hit))
                 continue
             path = os.path.join(DEVLOG_REPO_PATH, folder, f"{target}.md")
             os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -312,22 +308,31 @@ async def generate_and_commit_devlog(date_str=None, notify_empty=False):
                 f.write(md)
             committed.append(folder)
 
-        if not committed:
-            print(f"[devlog] {target}: 커밋할 내용 없음 (스킵)")
-            if notify_empty and notify:
-                await notify.send(f"ℹ️ `{target}`: 텍스트 메모가 없어 데브 로그를 만들지 않았어요. (작업 종료)")
-            return
-
-        url = await asyncio.to_thread(git_commit_push, target, committed)
-        if notify:
-            await notify.send(
-                f"✅ **{target} 데브 로그 커밋 완료**\n"
-                f"카테고리: {', '.join(committed)}\n{url}"
-            )
+        warn = "".join(f"\n⚠️ [{f}] 민감 정보 의심(`{h}`) → 커밋 제외" for f, h in blocked)
+        if committed:
+            url = await asyncio.to_thread(git_commit_push, target, committed)
+            return ("committed",
+                    f"✅ **{target} 데브 로그 커밋 완료**\n"
+                    f"카테고리: {', '.join(committed)}\n{url}{warn}")
+        if blocked:
+            return ("blocked", f"⚠️ **{target}**: 민감 정보 때문에 커밋하지 않았어요.{warn}")
+        return ("empty", f"ℹ️ `{target}`: 텍스트 메모가 없어 데브 로그를 만들지 않았어요. (작업 종료)")
     except Exception as e:
         print(f"[devlog] 오류: {e}")
-        if notify:
-            await notify.send(f"❌ **{target} 데브 로그 자동 커밋 실패**\n```\n{e}\n```")
+        return ("error", f"❌ **{target} 데브 로그 실패**\n```\n{e}\n```")
+
+
+async def devlog_cron():
+    """매일 06:00 자동 실행: 결과를 요약 채널에 보고. 내용 없는 날은 조용히 스킵."""
+    status, message = await generate_and_commit_devlog()
+    if status == "empty":
+        print(f"[devlog] {message}")
+        return
+    ch = bot.get_channel(SUMMARY_CHANNEL_ID)
+    if ch:
+        await ch.send(message)
+    else:
+        print(f"[devlog] 요약 채널({SUMMARY_CHANNEL_ID})을 찾지 못함. 결과: {message}")
 
 
 async def send_daily_summary():
@@ -417,7 +422,8 @@ async def slash_devlog(interaction: discord.Interaction, 날짜: str = None):
     await interaction.response.defer()
     target = 날짜 or (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
     await interaction.followup.send(f"`{target}` 데브 로그 생성 중...")
-    await generate_and_commit_devlog(target, notify_empty=True)
+    status, message = await generate_and_commit_devlog(target)
+    await interaction.followup.send(message)
 
 
 @bot.event
@@ -442,7 +448,7 @@ async def on_ready():
     if not scheduler.running:
         scheduler.add_job(send_daily_summary, "cron", hour=9, minute=0)
         scheduler.add_job(ai_weekly_cleanup, "cron", day_of_week="mon", hour=9, minute=10)
-        scheduler.add_job(generate_and_commit_devlog, "cron", hour=6, minute=0)
+        scheduler.add_job(devlog_cron, "cron", hour=6, minute=0)
         scheduler.start()
 
 

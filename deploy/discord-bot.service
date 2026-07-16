@@ -6,6 +6,7 @@ Wants=network-online.target
 [Service]
 Type=simple
 User=ubuntu
+Environment=PYTHONUNBUFFERED=1
 WorkingDirectory=/home/ubuntu/discord-assistant
 ExecStart=/home/ubuntu/discord-assistant/.venv/bin/python bot.py
 Restart=always
