@@ -15,7 +15,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 | 기능 | 설명 |
 |------|------|
 | 자동 메모 저장 | 모든 채널 메시지를 SQLite에 저장 (channel명 = 카테고리) |
-| 일일 요약 | 매일 오전 9시, 활성 메모를 GPT로 요약해 지정 채널에 전송 |
+| 일일 요약 | 매일 오전 9시, `DAILY_SUMMARY_CHANNELS`(세미나·뽀시래기·뽀시래기-피드백·todays-highlight·잡생각)의 **최근 `DAILY_SUMMARY_DAYS`(7)일치** 활성 메모만 GPT로 요약해 지정 채널에 전송 (전체 메모를 잡지 않음) |
 | 주간 자동 정리 | 매주 월요일 오전 9:10, AI가 완료됐을 가능성이 높은 항목을 제안 |
 | 완료 처리 | 메시지에 ✅ 반응 → DB에서 `status='done'`으로 변경 |
 | `/요약` 슬래시 커맨드 | 현재 채널의 최근 N일치 메모를 즉시 요약 (기본 90일) |
@@ -97,6 +97,7 @@ python bot.py
 | `save_message()` | 메시지 저장 (공백 무시, `INSERT OR IGNORE`) |
 | `mark_done()` | ✅ 반응 시 완료 처리 |
 | `get_all_messages()` | status 기준 전체 조회 |
+| `get_recent_messages()` | 최근 N일(기본 `DAILY_SUMMARY_DAYS`=7)·status 기준 조회 — 일일 요약용 |
 | `get_channel_messages()` | 채널·기간·status 기준 조회 |
 | `import_channel_history()` | 봇 시작 시 기존 메시지 수집 |
 | `send_daily_summary()` | 매일 오전 AI 요약 전송 |

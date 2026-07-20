@@ -16,6 +16,10 @@ load_dotenv()
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 SUMMARY_CHANNEL_ID = int(os.getenv("SUMMARY_CHANNEL_ID"))
+# 매일 09:00 일일 요약에 포함할 채널 (이 외 채널은 요약에서 제외)
+DAILY_SUMMARY_CHANNELS = ["세미나", "뽀시래기", "뽀시래기-피드백", "todays-highlight", "잡생각"]
+# 일일 요약에 포함할 기간 (일). 전체가 아니라 최근 N일치 메모만 요약한다.
+DAILY_SUMMARY_DAYS = 7
 
 # --- 데일리 리포트(공개 개발 저널) 설정 ---
 DEVLOG_REPO_PATH = os.getenv("DEVLOG_REPO_PATH", r"C:\Users\ghwn1\daily-report")
@@ -100,6 +104,21 @@ def get_all_messages(status="active"):
         "SELECT channel, content, timestamp FROM messages WHERE status = ? ORDER BY channel, timestamp",
         (status,)
     )
+    rows = c.fetchall()
+    conn.close()
+    return rows
+
+
+def get_recent_messages(days=DAILY_SUMMARY_DAYS, status="active"):
+    """최근 N일 안에 작성된 메모만 조회 (일일 요약용)."""
+    conn = sqlite3.connect("memories.db")
+    c = conn.cursor()
+    c.execute("""
+        SELECT channel, content, timestamp FROM messages
+        WHERE status = ?
+        AND timestamp >= datetime('now', ?)
+        ORDER BY channel, timestamp
+    """, (status, f'-{days} days'))
     rows = c.fetchall()
     conn.close()
     return rows
@@ -336,7 +355,9 @@ async def devlog_cron():
 
 
 async def send_daily_summary():
-    rows = get_all_messages(status="active")
+    # 전체 메모가 아니라 최근 DAILY_SUMMARY_DAYS일치 메모만 요약 대상으로 잡는다.
+    rows = get_recent_messages(days=DAILY_SUMMARY_DAYS, status="active")
+    rows = [r for r in rows if r[0] in DAILY_SUMMARY_CHANNELS]
     if not rows:
         return
 
@@ -348,7 +369,7 @@ async def send_daily_summary():
                 "role": "system",
                 "content": (
                     "너는 사용자의 개인 비서야. "
-                    "아래는 현재 진행 중인 메모들이야. "
+                    f"아래는 최근 {DAILY_SUMMARY_DAYS}일 동안 작성된, 진행 중인 메모들이야. "
                     "채널 이름이 카테고리 역할을 해. "
                     "채널별로 분류해서 핵심만 요약해줘. "
                     "일정이 있으면 날짜 순으로 정리해줘."
@@ -361,7 +382,7 @@ async def send_daily_summary():
     summary = response.choices[0].message.content
     channel = bot.get_channel(SUMMARY_CHANNEL_ID)
     if channel:
-        await channel.send(f"**오늘의 요약**\n\n{summary}")
+        await channel.send(f"**오늘의 요약** (최근 {DAILY_SUMMARY_DAYS}일)\n\n{summary}")
 
 
 @tree.command(name="요약", description="현재 채널에 기록된 내용을 요약합니다")
